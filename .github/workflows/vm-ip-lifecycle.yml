@@ -2,8 +2,8 @@ name: Manage Azure VM and IPv4
 
 on:
   schedule:
-    # 01:00 UTC+8: deallocate the VM and remove the public IPv4.
-    - cron: '0 17 * * *'
+    # 00:00 UTC+8: queue the cleanup runner one hour before the target.
+    - cron: '0 16 * * *'
     # 09:00 UTC+8: start the runner early, then wait dynamically until 10:00.
     - cron: '0 1 * * *'
   workflow_dispatch:
@@ -35,9 +35,9 @@ env:
 
 jobs:
   cleanup:
-    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '0 17 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'cleanup' || inputs.operation == 'full-cycle')) }}
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '0 16 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'cleanup' || inputs.operation == 'full-cycle')) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 75
     permissions:
       contents: read
       id-token: write
@@ -53,7 +53,35 @@ jobs:
             fi
           done
 
+      - name: Wait until 01:00 UTC+8 or skip after 10:00
+        id: shutdown_window
+        if: ${{ github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          local_date=$(TZ=Asia/Singapore date +%F)
+          target_epoch=$(TZ=Asia/Singapore date -d "$local_date 01:00:00" +%s)
+          cutoff_epoch=$(TZ=Asia/Singapore date -d "$local_date 10:00:00" +%s)
+          now_epoch=$(date +%s)
+
+          if [ "$now_epoch" -ge "$cutoff_epoch" ]; then
+            echo 'The cleanup runner started at or after 10:00 UTC+8; skipping shutdown.'
+            echo 'should_cleanup=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          wait_seconds=$((target_epoch - now_epoch))
+          if [ "$wait_seconds" -gt 0 ]; then
+            echo "Waiting $wait_seconds seconds until 01:00 UTC+8."
+            sleep "$wait_seconds"
+          else
+            echo '01:00 UTC+8 has passed; continuing with cleanup.'
+          fi
+
+          echo 'should_cleanup=true' >> "$GITHUB_OUTPUT"
+
       - name: Sign in to Azure with OIDC
+        if: ${{ github.event_name != 'schedule' || steps.shutdown_window.outputs.should_cleanup == 'true' }}
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -61,6 +89,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deallocate VM and remove public IPv4
+        if: ${{ github.event_name != 'schedule' || steps.shutdown_window.outputs.should_cleanup == 'true' }}
         uses: azure/cli@v2
         with:
           inlineScript: |
