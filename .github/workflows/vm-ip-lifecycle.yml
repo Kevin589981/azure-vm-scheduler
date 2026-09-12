@@ -1,0 +1,248 @@
+name: Manage Azure VM and IPv4
+
+on:
+  schedule:
+    # 01:00 UTC+8: deallocate the VM and remove the public IPv4.
+    - cron: '0 17 * * *'
+    # 09:00 UTC+8: start the runner early, then wait dynamically until 10:00.
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Select the lifecycle operation
+        required: true
+        default: full-cycle
+        type: choice
+        options:
+          - full-cycle
+          - cleanup
+          - allocate
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-vm-ip-lifecycle
+  cancel-in-progress: false
+
+env:
+  AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+  AZURE_VM_NAME: ${{ secrets.AZURE_VM_NAME }}
+  AZURE_NIC_NAME: ${{ secrets.AZURE_NIC_NAME }}
+  AZURE_IP_CONFIG_NAME: ${{ secrets.AZURE_IP_CONFIG_NAME }}
+  AZURE_PUBLIC_IP_PREFIX: ${{ secrets.AZURE_PUBLIC_IP_PREFIX }}
+  DDNS_HOSTNAME: ${{ secrets.DDNS_HOSTNAME }}
+
+jobs:
+  cleanup:
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '0 17 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'cleanup' || inputs.operation == 'full-cycle')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Validate lifecycle configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for variable_name in AZURE_RESOURCE_GROUP AZURE_VM_NAME AZURE_NIC_NAME AZURE_IP_CONFIG_NAME AZURE_PUBLIC_IP_PREFIX DDNS_HOSTNAME; do
+            if [ -z "${!variable_name:-}" ]; then
+              echo "Required GitHub Secret is missing: $variable_name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deallocate VM and remove public IPv4
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            set -Eeuo pipefail
+
+            public_ip_id=$(az network nic ip-config show \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --nic-name "$AZURE_NIC_NAME" \
+              --name "$AZURE_IP_CONFIG_NAME" \
+              --query 'publicIPAddress.id' -o tsv)
+
+            az vm deallocate \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$AZURE_VM_NAME" \
+              --only-show-errors
+
+            if [ -z "$public_ip_id" ]; then
+              echo 'VM deallocated; no public IPv4 was attached.'
+              exit 0
+            fi
+
+            public_ip_name="${public_ip_id##*/}"
+            az network nic ip-config update \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --nic-name "$AZURE_NIC_NAME" \
+              --name "$AZURE_IP_CONFIG_NAME" \
+              --remove publicIPAddress \
+              --only-show-errors >/dev/null
+            az network public-ip delete \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$public_ip_name" \
+              --only-show-errors
+            echo "Removed public IPv4 resource $public_ip_name."
+
+  allocate:
+    needs: cleanup
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule == '0 1 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'allocate' || inputs.operation == 'full-cycle'))) && needs.cleanup.result != 'failure' && needs.cleanup.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Validate lifecycle configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for variable_name in AZURE_RESOURCE_GROUP AZURE_VM_NAME AZURE_NIC_NAME AZURE_IP_CONFIG_NAME AZURE_PUBLIC_IP_PREFIX DDNS_HOSTNAME; do
+            if [ -z "${!variable_name:-}" ]; then
+              echo "Required GitHub Secret is missing: $variable_name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Wait until 10:00 UTC+8
+        if: ${{ github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target_epoch=$(date -u -d "$(date -u +%F) 02:00:00" +%s)
+          now_epoch=$(date -u +%s)
+          wait_seconds=$((target_epoch - now_epoch))
+          if [ "$wait_seconds" -gt 0 ]; then
+            echo "Waiting $wait_seconds seconds until 10:00 UTC+8."
+            sleep "$wait_seconds"
+          else
+            echo 'Target time has passed; continuing immediately.'
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Allocate IPv4 and start VM
+        id: allocate
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            set -Eeuo pipefail
+
+            current_ip_id=$(az network nic ip-config show \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --nic-name "$AZURE_NIC_NAME" \
+              --name "$AZURE_IP_CONFIG_NAME" \
+              --query 'publicIPAddress.id' -o tsv)
+            new_ip_created=''
+
+            cleanup_on_error() {
+              rc=$?
+              if [ "$rc" -ne 0 ] && [ -n "$new_ip_created" ]; then
+                current_ip_after_error=$(az network nic ip-config show \
+                  --resource-group "$AZURE_RESOURCE_GROUP" \
+                  --nic-name "$AZURE_NIC_NAME" \
+                  --name "$AZURE_IP_CONFIG_NAME" \
+                  --query 'publicIPAddress.id' -o tsv 2>/dev/null || true)
+                if [ -z "$current_ip_after_error" ]; then
+                  az network public-ip delete \
+                    --resource-group "$AZURE_RESOURCE_GROUP" \
+                    --name "$new_ip_name" \
+                    --only-show-errors || true
+                fi
+              fi
+              exit "$rc"
+            }
+            trap cleanup_on_error EXIT
+
+            if [ -n "$current_ip_id" ]; then
+              new_ip_name="${current_ip_id##*/}"
+              new_ip=$(az network public-ip show --ids "$current_ip_id" --query ipAddress -o tsv)
+              echo "Using existing public IPv4 $new_ip."
+            else
+              new_ip_name="${AZURE_PUBLIC_IP_PREFIX}-${GITHUB_RUN_ID}"
+              az network public-ip create \
+                --resource-group "$AZURE_RESOURCE_GROUP" \
+                --name "$new_ip_name" \
+                --location japaneast \
+                --sku Standard \
+                --allocation-method Static \
+                --version IPv4 \
+                --only-show-errors >/dev/null
+              new_ip_created='yes'
+              new_ip=$(az network public-ip show \
+                --resource-group "$AZURE_RESOURCE_GROUP" \
+                --name "$new_ip_name" \
+                --query ipAddress -o tsv)
+              az network nic ip-config update \
+                --resource-group "$AZURE_RESOURCE_GROUP" \
+                --nic-name "$AZURE_NIC_NAME" \
+                --name "$AZURE_IP_CONFIG_NAME" \
+                --public-ip-address "$new_ip_name" \
+                --only-show-errors >/dev/null
+              echo "Attached new public IPv4 $new_ip."
+            fi
+
+            az vm start \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$AZURE_VM_NAME" \
+              --only-show-errors
+
+            for attempt in $(seq 1 30); do
+              power_state=$(az vm get-instance-view \
+                --resource-group "$AZURE_RESOURCE_GROUP" \
+                --name "$AZURE_VM_NAME" \
+                --query "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]" \
+                -o tsv 2>/dev/null || true)
+              if [ "$power_state" = 'VM running' ]; then
+                break
+              fi
+              if [ "$attempt" -eq 30 ]; then
+                echo 'VM did not reach running state in time.' >&2
+                exit 1
+              fi
+              sleep 10
+            done
+
+            echo "new_ip=$new_ip" >> "$GITHUB_OUTPUT"
+            trap - EXIT
+
+      - name: Wait for server DDNS to publish IPv4
+        shell: bash
+        env:
+          EXPECTED_IPV4: ${{ steps.allocate.outputs.new_ip }}
+        run: |
+          set -Eeuo pipefail
+          if ! command -v dig >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq dnsutils
+          fi
+
+          for attempt in $(seq 1 20); do
+            observed_ipv4=$(dig +short A "$DDNS_HOSTNAME" @aitana.ns.cloudflare.com | head -n 1 | tr -d '[:space:]')
+            observed_ipv6=$(dig +short AAAA "$DDNS_HOSTNAME" @aitana.ns.cloudflare.com | head -n 1 | tr -d '[:space:]')
+            echo "Attempt $attempt: A=$observed_ipv4 AAAA=$observed_ipv6"
+            if [ "$observed_ipv4" = "$EXPECTED_IPV4" ]; then
+              echo "DDNS updated $DDNS_HOSTNAME to $EXPECTED_IPV4."
+              exit 0
+            fi
+            sleep 30
+          done
+
+          echo "DDNS did not publish $EXPECTED_IPV4 within 10 minutes." >&2
+          exit 1
