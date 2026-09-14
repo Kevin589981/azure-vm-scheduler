@@ -3,9 +3,9 @@ name: Manage Azure VM and IPv4
 on:
   schedule:
     # 00:00 UTC+8: queue the cleanup runner one hour before the target.
-    - cron: '0 16 * * *'
+    - cron: '37 15 * * *'
     # 09:00 UTC+8: start the runner early, then wait dynamically until 10:00.
-    - cron: '0 1 * * *'
+    - cron: '43 0 * * *'
   workflow_dispatch:
     inputs:
       operation:
