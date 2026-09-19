@@ -2,10 +2,10 @@ name: Manage Azure VM and IPv4
 
 on:
   schedule:
-    # 00:15 UTC+8: queue cleanup 45 minutes before the 01:00 target.
-    - cron: '15 16 * * *'
-    # 09:15 UTC+8: queue allocation 45 minutes before the 10:00 target.
-    - cron: '15 1 * * *'
+    # 00:00 UTC+8: queue the cleanup runner one hour before the target.
+    - cron: '37 15 * * *'
+    # 09:00 UTC+8: start the runner early, then wait dynamically until 10:00.
+    - cron: '43 0 * * *'
   workflow_dispatch:
     inputs:
       operation:
@@ -35,7 +35,7 @@ env:
 
 jobs:
   cleanup:
-    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '15 16 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'cleanup' || inputs.operation == 'full-cycle')) }}
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '0 16 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'cleanup' || inputs.operation == 'full-cycle')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
@@ -126,7 +126,7 @@ jobs:
 
   allocate:
     needs: cleanup
-    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule == '15 1 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'allocate' || inputs.operation == 'full-cycle'))) && needs.cleanup.result != 'failure' && needs.cleanup.result != 'cancelled' }}
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule == '0 1 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'allocate' || inputs.operation == 'full-cycle'))) && needs.cleanup.result != 'failure' && needs.cleanup.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
