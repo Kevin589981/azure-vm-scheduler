@@ -84,9 +84,9 @@ jobs:
         if: ${{ github.event_name != 'schedule' || steps.shutdown_window.outputs.should_cleanup == 'true' }}
         uses: azure/login@v2
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deallocate VM and remove public IPv4
         if: ${{ github.event_name != 'schedule' || steps.shutdown_window.outputs.should_cleanup == 'true' }}
@@ -163,9 +163,9 @@ jobs:
       - name: Sign in to Azure with OIDC
         uses: azure/login@v2
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Allocate IPv4 and start VM
         id: allocate
@@ -265,8 +265,7 @@ jobs:
 
           for attempt in $(seq 1 20); do
             observed_ipv4=$(dig +short A "$DDNS_HOSTNAME" @aitana.ns.cloudflare.com | head -n 1 | tr -d '[:space:]')
-            observed_ipv6=$(dig +short AAAA "$DDNS_HOSTNAME" @aitana.ns.cloudflare.com | head -n 1 | tr -d '[:space:]')
-            echo "Attempt $attempt: A=$observed_ipv4 AAAA=$observed_ipv6"
+            echo "Attempt $attempt: A=$observed_ipv4"
             if [ "$observed_ipv4" = "$EXPECTED_IPV4" ]; then
               echo "DDNS updated $DDNS_HOSTNAME to $EXPECTED_IPV4."
               exit 0
