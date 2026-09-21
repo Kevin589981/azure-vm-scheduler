@@ -203,6 +203,7 @@ jobs:
             if [ -n "$current_ip_id" ]; then
               new_ip_name="${current_ip_id##*/}"
               new_ip=$(az network public-ip show --ids "$current_ip_id" --query ipAddress -o tsv)
+              echo "::add-mask::$new_ip"
               echo "Using existing public IPv4 $new_ip."
             else
               new_ip_name="${AZURE_PUBLIC_IP_PREFIX}-${GITHUB_RUN_ID}"
@@ -219,6 +220,7 @@ jobs:
                 --resource-group "$AZURE_RESOURCE_GROUP" \
                 --name "$new_ip_name" \
                 --query ipAddress -o tsv)
+              echo "::add-mask::$new_ip"
               az network nic ip-config update \
                 --resource-group "$AZURE_RESOURCE_GROUP" \
                 --nic-name "$AZURE_NIC_NAME" \
