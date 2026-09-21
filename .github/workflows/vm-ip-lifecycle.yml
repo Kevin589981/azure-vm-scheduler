@@ -149,8 +149,9 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          target_epoch=$(date -u -d "$(date -u +%F) 02:00:00" +%s)
-          now_epoch=$(date -u +%s)
+          local_date=$(TZ=Asia/Singapore date +%F)
+          target_epoch=$(TZ=Asia/Singapore date -d "$local_date 10:00:00" +%s)
+          now_epoch=$(date +%s)
           wait_seconds=$((target_epoch - now_epoch))
           if [ "$wait_seconds" -gt 0 ]; then
             echo "Waiting $wait_seconds seconds until 10:00 UTC+8."
