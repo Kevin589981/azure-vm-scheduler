@@ -37,7 +37,7 @@ jobs:
   cleanup:
     if: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 13 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'cleanup' || inputs.operation == 'full-cycle')) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 360
     permissions:
       contents: read
       id-token: write
@@ -128,7 +128,7 @@ jobs:
     needs: cleanup
     if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule == '53 20 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'allocate' || inputs.operation == 'full-cycle'))) && needs.cleanup.result != 'failure' && needs.cleanup.result != 'cancelled' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 360
     permissions:
       contents: read
       id-token: write
